@@ -1,4 +1,4 @@
-!pip install streamlit biopython requests
+!pip install streamlit biopython requests numpy pandas
 
 import streamlit as st
 import pandas as pd
