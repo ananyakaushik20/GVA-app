@@ -9,31 +9,28 @@ from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 import requests
 
+
 def parse_vcf(vcf_file):
     """
     Parses a VCF file and extracts the relevant information.
 
     Args:
-        vcf_file (str): The path to the VCF file.
+        vcf_file: A file-like object containing the VCF file.
 
     Returns:
         A Pandas DataFrame containing the variant information.
     """
-    # Parse the VCF file using Biopython
-    handle = open(vcf_file)
-    records = list(seqio.parse(handle, "vcf"))
-    handle.close()
-
-    # Extract the relevant information and create a Pandas DataFrame
+    vcf_reader = pysam.VariantFile(vcf_file)
     variant_info = []
-    for record in records:
-        chrom = record.id.split(":")[0]
-        pos = record.id.split(":")[1]
-        ref = record.seq.ungap("").upper()
-        alt = str(record.annotations["ALT"]).upper()
-        qual = record.annotations["QUAL"]
-        filter_ = record.annotations["FILTER"]
-        info = record.annotations["INFO"]
+    
+    for record in vcf_reader:
+        chrom = record.chrom
+        pos = record.pos
+        ref = record.ref
+        alt = ','.join(record.alts)
+        qual = record.qual
+        filter_ = ','.join(record.filter.keys()) if record.filter.keys() else "PASS"
+        info = record.info
 
         variant_info.append([chrom, pos, ref, alt, qual, filter_, info])
 
@@ -51,48 +48,29 @@ def get_clinical_significance(variant_df):
     Returns:
         A Pandas DataFrame containing the clinical significance information.
     """
-    # Initialize an empty DataFrame to store the clinical significance information
-    clinical_df = pd.DataFrame(columns=["Gene", "Chromosome", "Start", "End", "ClinVar", "OMIM"])
-
-    # Loop through each variant and retrieve the clinical significance information
-    for index, row in variant_df.iterrows():
-        # Extract the variant information
+    clinical_info = []
+    for _, row in variant_df.iterrows():
         chrom = row["Chromosome"]
         pos = row["Position"]
         ref = row["Reference"]
         alt = row["Alternate"]
 
-        # Construct the ClinVar API URL
-        clinvar_url = f"https://www.ncbi.nlm.nih.gov/clinvar/api/v2/variation/?chrom={chrom}&start={pos-1}&end={pos}&reference_allele={ref}&alternate_allele={alt}"
+        # Construct the Ensembl VEP API URL for variant annotation
+        vep_url = f"https://rest.ensembl.org/vep/human/region/{chrom}:{pos}:{ref}/{alt}?"
+        vep_response = requests.get(vep_url, headers={"Content-Type": "application/json"})
 
-        # Retrieve the ClinVar data
-        try:
-            clinvar_response = requests.get(clinvar_url)
-            clinvar_data = clinvar_response.json()
+        if vep_response.status_code == 200:
+            vep_data = vep_response.json()
+            if vep_data:
+                gene = vep_data[0].get("gene_symbol", "N/A")
+                clin_sig = vep_data[0].get("most_severe_consequence", "N/A")
+                clinical_info.append([gene, chrom, pos, clin_sig])
+            else:
+                clinical_info.append(["N/A", chrom, pos, "No data"])
+        else:
+            clinical_info.append(["N/A", chrom, pos, "Error fetching data"])
 
-            # Extract the relevant information
-            clinvar_gene = clinvar_data["results"][0]["gene_symbol"]
-            clinvar_chrom = clinvar_data["results"][0]["chrom"]
-            clinvar_start = clinvar_data["results"][0]["start"]
-            clinvar_end = clinvar_data["results"][0]["end"]
-            clinvar_clinical_significance = clinvar_data["results"][0]["clinical_significance"]
-
-            # Construct the OMIM API URL
-            omim_url = f"https://api.omim.org/api/entry/?search={clinvar_gene}"
-
-            # Retrieve the OMIM data
-            omim_response = requests.get(omim_url)
-            omim_data = omim_response.json()
-
-            # Extract the relevant information
-            omim_phenotype = omim_data["entry_list"][0]["phenotype_description"]
-
-            # Add the clinical significance information to the DataFrame
-            clinical_df = clinical_df.append({"Gene": clinvar_gene, "Chromosome": clinvar_chrom, "Start": clinvar_start, "End": clinvar_end, "ClinVar": clinvar_clinical_significance, "OMIM": omim_phenotype}, ignore_index=True)
-
-        except:
-            continue
-
+    clinical_df = pd.DataFrame(clinical_info, columns=["Gene", "Chromosome", "Position", "Clinical Significance"])
     return clinical_df
 
 def main():
@@ -119,3 +97,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
